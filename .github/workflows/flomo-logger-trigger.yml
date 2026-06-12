@@ -1,0 +1,51 @@
+name: Flomo Time Logger Trigger
+
+# Runs every 15 min during Beijing hours (08:00–23:59 CST = UTC 00:00–15:59).
+# China has no DST, so this mapping is stable year-round.
+on:
+  schedule:
+    - cron: '*/15 0-15 * * *'
+  workflow_dispatch:
+    inputs:
+      since:
+        description: 'Custom since timestamp (ISO 8601 UTC). Leave blank to use now-22min.'
+        required: false
+        default: ''
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - name: Compute since timestamp
+        id: ts
+        run: |
+          if [ -n "${{ github.event.inputs.since }}" ]; then
+            echo "since=${{ github.event.inputs.since }}" >> $GITHUB_OUTPUT
+          else
+            # 22-min lookback: 7-min buffer beyond the 15-min poll interval,
+            # guards against GH Actions cron jitter (jobs can fire several minutes late).
+            echo "since=$(python3 -c "
+from datetime import datetime, timedelta, timezone
+t = datetime.now(timezone.utc) - timedelta(minutes=22)
+print(t.strftime('%Y-%m-%dT%H:%M:%SZ'))
+")" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Trigger Claude Routine
+        run: |
+          HTTP_STATUS=$(curl -s -o /tmp/routine_response.txt -w "%{http_code}" \
+            -X POST "${{ secrets.CLAUDE_ROUTINE_WEBHOOK_URL }}" \
+            -H "Authorization: Bearer ${{ secrets.CLAUDE_ROUTINE_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"trigger\":\"flomo_time_record\",\"since\":\"${{ steps.ts.outputs.since }}\"}" \
+            --max-time 30)
+
+          echo "HTTP status: $HTTP_STATUS"
+          cat /tmp/routine_response.txt
+
+          if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
+            echo "::error::Routine webhook returned $HTTP_STATUS"
+            exit 1
+          fi

@@ -1,0 +1,60 @@
+[
+  {
+    "id": "test-001",
+    "label": "Full-day summary with explicit times (next-morning retrospective)",
+    "created_at": "2026-06-12T08:30:00+08:00",
+    "content": "时间记录：6月11日。\n\n大概是9:15起床，洗漱、吃早饭。10:00开始写阅读作业，到10:40完成阅读作业后，开始语法作业。10:40开始上语法课，到下午12:10结束。\n\n吃完饭以后，2:00去测视力。下午状态不好，睡了一觉，大概1小时。晚上7:00吃晚饭，20分钟左右。",
+    "expected": [
+      { "target_date": "2026-06-11", "activity": "起床洗漱吃早饭", "start_time": "09:15", "end_time": "10:00", "confidence": "medium" },
+      { "target_date": "2026-06-11", "activity": "写阅读作业", "start_time": "10:00", "end_time": "10:40", "confidence": "high" },
+      { "target_date": "2026-06-11", "activity": "语法课", "start_time": "10:40", "end_time": "12:10", "confidence": "high" },
+      { "target_date": "2026-06-11", "activity": "测视力", "start_time": "14:00", "end_time": "14:30", "confidence": "medium" },
+      { "target_date": "2026-06-11", "activity": "午睡", "start_time": "14:30", "end_time": "15:30", "confidence": "medium" },
+      { "target_date": "2026-06-11", "activity": "吃晚饭", "start_time": "19:00", "end_time": "19:20", "confidence": "high" }
+    ],
+    "notes": "TARGET_DATE from header (6月11日), not from created_at (6月12日). Explicit start+end times → high confidence. '2:00去测视力' has only start → medium."
+  },
+  {
+    "id": "test-002",
+    "label": "Perfect-aspect verbs — created_at is end_time",
+    "created_at": "2026-06-11T13:25:00+08:00",
+    "content": "时间记录。刚吃完午饭，外卖，在家。",
+    "expected": [
+      { "target_date": "2026-06-11", "activity": "吃午饭（外卖）", "start_time": "12:55", "end_time": "13:25", "confidence": "medium" }
+    ],
+    "notes": "No date header → use created_at date. '吃完' = perfect aspect → created_at 13:25 is end_time. 外卖 default = 30 min → start = 12:55."
+  },
+  {
+    "id": "test-003",
+    "label": "Explicit duration in memo",
+    "created_at": "2026-06-11T17:30:00+08:00",
+    "content": "时间记录：下午打了2小时篮球，3点开始的。回来后散步了一圈大概30分钟。",
+    "expected": [
+      { "target_date": "2026-06-11", "activity": "打篮球", "start_time": "15:00", "end_time": "17:00", "confidence": "high" },
+      { "target_date": "2026-06-11", "activity": "散步", "start_time": "17:00", "end_time": "17:30", "confidence": "medium" }
+    ],
+    "notes": "Explicit duration '2小时' + explicit start '3点' → high confidence. '散步30分钟' after basketball ends → chain the times."
+  },
+  {
+    "id": "test-004",
+    "label": "Relative date reference (昨天)",
+    "created_at": "2026-06-12T09:00:00+08:00",
+    "content": "昨天忘记记了。昨天下午2点半去图书馆看书，大概看了3小时。晚上吃了外卖。",
+    "expected": [
+      { "target_date": "2026-06-11", "activity": "图书馆看书", "start_time": "14:30", "end_time": "17:30", "confidence": "high" },
+      { "target_date": "2026-06-11", "activity": "吃晚饭（外卖）", "start_time": "19:00", "end_time": "19:30", "confidence": "low" }
+    ],
+    "notes": "No date header but '昨天' → target_date = 2026-06-11 (created_at 6月12日 − 1). '下午2点半' explicit + '3小时' explicit → high. '晚上吃外卖' — no exact time → evening midpoint 19:00, confidence=low."
+  },
+  {
+    "id": "test-005",
+    "label": "Low confidence / vague — should skip or flag",
+    "created_at": "2026-06-11T22:00:00+08:00",
+    "content": "时间记录。今天总体状态不好，上午做了点事情，下午也没怎么动，晚上看了会儿手机。",
+    "expected": [
+      { "target_date": "2026-06-11", "activity": "上午活动", "start_time": "10:00", "end_time": "10:30", "confidence": "low" },
+      { "target_date": "2026-06-11", "activity": "晚上看手机", "start_time": "20:00", "end_time": "20:30", "confidence": "low" }
+    ],
+    "notes": "All activities vague. '下午没怎么动' — no clear activity, should be skipped entirely. Others get low confidence with time-of-day midpoints. These may or may not make it into Calendar depending on confidence threshold."
+  }
+]
