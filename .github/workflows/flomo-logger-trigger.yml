@@ -6,11 +6,6 @@ on:
   schedule:
     - cron: '*/15 0-15 * * *'
   workflow_dispatch:
-    inputs:
-      since:
-        description: 'Custom since timestamp (ISO 8601 UTC). Leave blank to use now-22min.'
-        required: false
-        default: ''
 
 jobs:
   trigger:
