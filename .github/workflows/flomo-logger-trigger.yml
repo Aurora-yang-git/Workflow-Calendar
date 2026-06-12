@@ -24,13 +24,8 @@ jobs:
           if [ -n "${{ github.event.inputs.since }}" ]; then
             echo "since=${{ github.event.inputs.since }}" >> $GITHUB_OUTPUT
           else
-            # 22-min lookback: 7-min buffer beyond the 15-min poll interval,
-            # guards against GH Actions cron jitter (jobs can fire several minutes late).
-            echo "since=$(python3 -c "
-from datetime import datetime, timedelta, timezone
-t = datetime.now(timezone.utc) - timedelta(minutes=22)
-print(t.strftime('%Y-%m-%dT%H:%M:%SZ'))
-")" >> $GITHUB_OUTPUT
+            SINCE=$(python3 -c 'from datetime import datetime,timedelta,timezone; t=datetime.now(timezone.utc)-timedelta(minutes=22); print(t.strftime("%Y-%m-%dT%H:%M:%SZ"))')
+            echo "since=$SINCE" >> $GITHUB_OUTPUT
           fi
 
       - name: Trigger Claude Routine
