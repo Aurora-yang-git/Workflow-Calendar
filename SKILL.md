@@ -4,7 +4,10 @@
 
 ## 触发方式
 
-Webhook body 包含字段 `since`（ISO 8601 UTC 时间戳，格式如 `2026-06-11T14:00:00Z`）。
+由 GitHub Actions cron 每 15 分钟触发一次（北京时间 08:00–23:59）。
+
+触发后，用当前时间计算查询窗口：
+**`since` = 当前 UTC 时间 − 22 分钟**（覆盖本次轮询窗口，含 7 分钟抖动缓冲）
 
 ---
 
@@ -27,7 +30,7 @@ list_calendars()
 
 调用 flomo MCP：
 ```
-memo_search(keywords="时间记录", start_date=<since>)
+memo_search(keywords="时间记录", start_date=<当前UTC时间 − 22分钟>)
 ```
 
 提取每条 memo 的：`id`、`created_at`（含 `+08:00` 时区，无需换算）、`content`。

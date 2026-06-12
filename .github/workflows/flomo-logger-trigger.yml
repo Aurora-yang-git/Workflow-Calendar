@@ -18,23 +18,13 @@ jobs:
     timeout-minutes: 2
 
     steps:
-      - name: Compute since timestamp
-        id: ts
-        run: |
-          if [ -n "${{ github.event.inputs.since }}" ]; then
-            echo "since=${{ github.event.inputs.since }}" >> $GITHUB_OUTPUT
-          else
-            SINCE=$(python3 -c 'from datetime import datetime,timedelta,timezone; t=datetime.now(timezone.utc)-timedelta(minutes=22); print(t.strftime("%Y-%m-%dT%H:%M:%SZ"))')
-            echo "since=$SINCE" >> $GITHUB_OUTPUT
-          fi
-
       - name: Trigger Claude Routine
         run: |
           HTTP_STATUS=$(curl -s -o /tmp/routine_response.txt -w "%{http_code}" \
             -X POST "${{ secrets.CLAUDE_ROUTINE_WEBHOOK_URL }}" \
             -H "Authorization: Bearer ${{ secrets.CLAUDE_ROUTINE_API_KEY }}" \
             -H "Content-Type: application/json" \
-            -d "{\"trigger\":\"flomo_time_record\",\"since\":\"${{ steps.ts.outputs.since }}\"}" \
+            -d '{}' \
             --max-time 30)
 
           echo "HTTP status: $HTTP_STATUS"
