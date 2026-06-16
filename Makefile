@@ -11,15 +11,8 @@ health:
 	@echo "=== Last 5 Workflow Runs ==="
 	@gh run list --repo $(REPO) --workflow flomo-logger-trigger.yml --limit 5 \
 	  --json conclusion,startedAt 2>/dev/null \
-	  | python3 -c "
-import sys, json
-runs = json.load(sys.stdin)
-if not runs:
-    print('  (no runs yet)')
-for r in runs:
-    icon = '✅' if r['conclusion'] == 'success' else ('⏳' if not r['conclusion'] else '❌')
-    print(f\"  {icon} {r['startedAt'][:16]}  {r['conclusion'] or 'in_progress'}\")
-" 2>/dev/null || echo "  (gh CLI unavailable)"
+	  | python3 -c 'import sys,json; runs=json.load(sys.stdin); [print("  " + ("✅" if r["conclusion"]=="success" else ("⏳" if not r["conclusion"] else "❌")) + " " + r["startedAt"][:16] + "  " + (r["conclusion"] or "in_progress")) for r in runs] if runs else print("  (no runs yet)")' \
+	  || echo "  (gh CLI unavailable)"
 	@echo "=== flomo REST API ==="
 	@if [ -n "$$FLOMO_API_TOKEN" ]; then \
 	  CODE=$$(curl -s -X POST "https://flomoapp.com/api/v1/memo/" \
@@ -47,16 +40,7 @@ deploy:
 logs:
 	@gh run list --repo $(REPO) --workflow flomo-logger-trigger.yml --limit 10 \
 	  --json conclusion,startedAt,url \
-	  | python3 -c "
-import sys, json
-runs = json.load(sys.stdin)
-if not runs:
-    print('No runs yet.')
-    sys.exit()
-for r in runs:
-    icon = '✅' if r['conclusion'] == 'success' else ('⏳' if not r['conclusion'] else '❌')
-    print(f\"{icon}  {r['startedAt'][:16]}  {r['conclusion'] or 'in_progress'}  {r['url']}\")
-"
+	  | python3 -c 'import sys,json; runs=json.load(sys.stdin); print("No runs yet.") if not runs else [print(("✅" if r["conclusion"]=="success" else ("⏳" if not r["conclusion"] else "❌")) + "  " + r["startedAt"][:16] + "  " + (r["conclusion"] or "in_progress") + "  " + r["url"]) for r in runs]'
 
 # Manually fire the sync workflow and watch it run.
 test-run:
