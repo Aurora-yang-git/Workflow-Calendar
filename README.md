@@ -94,3 +94,7 @@ Events appear in Google Calendar within 15–20 minutes of writing.
 | `.github/workflows/flomo-logger-trigger.yml` | GitHub Actions cron trigger |
 | `test/memos.json` | 5 test cases with expected parsing outputs |
 | `test/README.md` | How to run dry-run and live tests |
+
+## Related workflow
+
+This repo also hosts a sibling automation, **Mail → Google Calendar** — see [`README-mail.md`](README-mail.md). It turns forwarded event emails into Calendar events via a Gmail-label queue, and runs independently of this flomo logger (separate Routine, workflow, and secrets).

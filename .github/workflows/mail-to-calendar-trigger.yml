@@ -1,0 +1,32 @@
+name: Mail to Calendar Trigger
+
+# Runs every 30 min, ~08:00–23:30 America/Los_Angeles (PDT = UTC-7).
+# The routine is idempotent (Gmail label queue), so off-hours runs are harmless.
+on:
+  schedule:
+    - cron: '*/30 15-23,0-6 * * *'
+  workflow_dispatch:
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - name: Trigger Claude Routine
+        run: |
+          HTTP_STATUS=$(curl -s -o /tmp/routine_response.txt -w "%{http_code}" \
+            -X POST "${{ secrets.MAIL_CAL_ROUTINE_WEBHOOK_URL }}" \
+            -H "Authorization: Bearer ${{ secrets.MAIL_CAL_ROUTINE_API_KEY }}" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "Content-Type: application/json" \
+            -d '{"trigger":"mail_to_calendar"}' \
+            --max-time 30)
+
+          echo "HTTP status: $HTTP_STATUS"
+          cat /tmp/routine_response.txt
+
+          if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
+            echo "::error::Routine webhook returned $HTTP_STATUS"
+            exit 1
+          fi
