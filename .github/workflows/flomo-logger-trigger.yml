@@ -19,12 +19,23 @@ jobs:
           # infrastructure-agnostic. 22 = 15-min cron interval + 7-min jitter buffer.
           SINCE=$(date -u -d '22 minutes ago' +%Y-%m-%dT%H:%M:%SZ)
 
+          # If the diary trigger stored today's memo ID, pass it directly so the
+          # Routine can use memo_batch_get (faster, saves tokens) instead of
+          # memo_search. The Routine checks updated_at > since internally.
+          DIARY_MEMO_ID="${{ vars.DIARY_MEMO_ID_TODAY }}"
+
+          if [ -n "$DIARY_MEMO_ID" ]; then
+            BODY="{\"trigger\": \"flomo_time_record\", \"since\": \"${SINCE}\", \"diary_memo_id\": \"${DIARY_MEMO_ID}\"}"
+          else
+            BODY="{\"trigger\": \"flomo_time_record\", \"since\": \"${SINCE}\"}"
+          fi
+
           HTTP_STATUS=$(curl -s -o /tmp/routine_response.txt -w "%{http_code}" \
             -X POST "${{ secrets.CLAUDE_ROUTINE_WEBHOOK_URL }}" \
             -H "Authorization: Bearer ${{ secrets.CLAUDE_ROUTINE_API_KEY }}" \
             -H "anthropic-version: 2023-06-01" \
             -H "Content-Type: application/json" \
-            -d "{\"trigger\": \"flomo_time_record\", \"since\": \"${SINCE}\"}" \
+            -d "$BODY" \
             --max-time 30)
 
           echo "HTTP status: $HTTP_STATUS"

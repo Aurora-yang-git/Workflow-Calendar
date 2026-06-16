@@ -34,6 +34,15 @@ Token format: `fmcp_*`. Get from flomo Settings → Open API.
 | `CLAUDE_ROUTINE_API_KEY` | API key / auth token for the webhook (from same page) | — |
 | `FLOMO_API_TOKEN` | flomo open API token — **same value** as the `fmcp_*` token used by the flomo MCP connector. Get from flomo Settings → Open API. | `fmcp_*` |
 
+**Repository Variables (not Secrets — set automatically by workflows, not manually):**
+
+| Variable | Set by | Value | Purpose |
+|----------|--------|-------|---------|
+| `DIARY_MEMO_ID_TODAY` | `flomo-diary-trigger.yml` at 08:00 CST | flomo memo ID string | Logger passes this to Routine so it can use `memo_batch_get` instead of `memo_search` |
+| `DIARY_MEMO_LAST_UPDATED` | `flomo-diary-trigger.yml` at 08:00 CST | ISO 8601 UTC timestamp | Baseline for the Routine's `updated_at > since` check |
+
+These are created automatically on first diary trigger run. If the trigger fails to write them (e.g., `gh` auth issue), the logger falls back gracefully (no `diary_memo_id` in webhook → Routine skips the batch-get path).
+
 **Workflow files:**
 
 | File | Schedule | Purpose |
