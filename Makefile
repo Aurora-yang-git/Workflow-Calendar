@@ -4,15 +4,16 @@ REPO := $(shell git remote get-url origin 2>/dev/null | sed 's|.*github.com[:/]|
 
 # Verify all three external dependencies are healthy.
 health:
+	@echo "=== gh CLI auth ==="
+	@gh auth status 2>&1 | grep -q "Logged in" && echo "  ✅ authenticated" || echo "  ❌ not authed — run: gh auth login"
 	@echo "=== GitHub Secrets ==="
-	@gh secret list --repo $(REPO) 2>/dev/null \
-	  | awk '/CLAUDE_ROUTINE_WEBHOOK_URL|CLAUDE_ROUTINE_API_KEY|FLOMO_API_TOKEN/ {print "  ✅", $$1}' \
-	  || echo "  ❌ gh CLI not authed — run: gh auth login"
+	@SECRETS=$$(gh secret list --repo $(REPO) 2>/dev/null); \
+	  for name in CLAUDE_ROUTINE_WEBHOOK_URL CLAUDE_ROUTINE_API_KEY FLOMO_API_TOKEN; do \
+	    echo "$$SECRETS" | grep -q "$$name" && echo "  ✅ $$name" || echo "  ❌ $$name missing"; \
+	  done
 	@echo "=== Last 5 Workflow Runs ==="
-	@gh run list --repo $(REPO) --workflow flomo-logger-trigger.yml --limit 5 \
-	  --json conclusion,startedAt 2>/dev/null \
-	  | python3 -c 'import sys,json; runs=json.load(sys.stdin); [print("  " + ("✅" if r["conclusion"]=="success" else ("⏳" if not r["conclusion"] else "❌")) + " " + r["startedAt"][:16] + "  " + (r["conclusion"] or "in_progress")) for r in runs] if runs else print("  (no runs yet)")' \
-	  || echo "  (gh CLI unavailable)"
+	@OUT=$$(gh run list --repo $(REPO) --workflow flomo-logger-trigger.yml --limit 5 --json conclusion,startedAt 2>/dev/null); \
+	  echo "$$OUT" | python3 -c 'import sys,json; data=sys.stdin.read().strip(); runs=json.loads(data) if data.startswith("[") else []; [print("  " + ("✅" if r["conclusion"]=="success" else ("⏳" if not r["conclusion"] else "❌")) + " " + r["startedAt"][:16] + "  " + (r["conclusion"] or "in_progress")) for r in runs] if runs else print("  (no runs yet — or not authed)")'
 	@echo "=== flomo REST API ==="
 	@if [ -n "$$FLOMO_API_TOKEN" ]; then \
 	  CODE=$$(curl -s -X POST "https://flomoapp.com/api/v1/memo/" \
