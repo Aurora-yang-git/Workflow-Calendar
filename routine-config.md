@@ -88,6 +88,15 @@ If the file already exists, append to it instead of overwriting.
 If OBSIDIAN_VAULT_PATH is not set, exit with an error message.
 ```
 
+## Makefile commands
+
+| Command | What it does |
+|---------|-------------|
+| `make health` | Check GH secrets exist, last 5 run statuses, flomo write access (requires `export FLOMO_API_TOKEN=fmcp_...` locally) |
+| `make deploy` | Copy `SKILL.md` to clipboard + open claude.ai |
+| `make logs` | Last 10 runs with timestamps and links |
+| `make test-run` | Fire the sync workflow now and watch it complete |
+
 ## Recovery Checklist (after a long gap)
 
 **Flomo → Calendar Routine:**

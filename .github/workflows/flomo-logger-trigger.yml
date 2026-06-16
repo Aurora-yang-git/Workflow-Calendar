@@ -15,12 +15,16 @@ jobs:
     steps:
       - name: Trigger Claude Routine
         run: |
+          # Compute the 22-minute lookback window here so SKILL.md stays
+          # infrastructure-agnostic. 22 = 15-min cron interval + 7-min jitter buffer.
+          SINCE=$(date -u -d '22 minutes ago' +%Y-%m-%dT%H:%M:%SZ)
+
           HTTP_STATUS=$(curl -s -o /tmp/routine_response.txt -w "%{http_code}" \
             -X POST "${{ secrets.CLAUDE_ROUTINE_WEBHOOK_URL }}" \
             -H "Authorization: Bearer ${{ secrets.CLAUDE_ROUTINE_API_KEY }}" \
             -H "anthropic-version: 2023-06-01" \
             -H "Content-Type: application/json" \
-            -d '{}' \
+            -d "{\"trigger\": \"flomo_time_record\", \"since\": \"${SINCE}\"}" \
             --max-time 30)
 
           echo "HTTP status: $HTTP_STATUS"
