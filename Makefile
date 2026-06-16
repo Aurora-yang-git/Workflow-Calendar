@@ -1,4 +1,9 @@
-.PHONY: health deploy logs test-run
+.PHONY: health deploy logs test-run set-call-times
+
+# Defaults for set-call-times (override on command line: make set-call-times MORNING=12 EVENING=22 OFFSET=8)
+MORNING ?= 12
+EVENING ?= 22
+OFFSET  ?= 8
 
 REPO := $(shell git remote get-url origin 2>/dev/null | sed 's|.*github.com[:/]||; s|\.git$$||')
 
@@ -42,6 +47,30 @@ logs:
 	@gh run list --repo $(REPO) --workflow flomo-logger-trigger.yml --limit 10 \
 	  --json conclusion,startedAt,url \
 	  | python3 -c 'import sys,json; runs=json.load(sys.stdin); print("No runs yet.") if not runs else [print(("✅" if r["conclusion"]=="success" else ("⏳" if not r["conclusion"] else "❌")) + "  " + r["startedAt"][:16] + "  " + (r["conclusion"] or "in_progress") + "  " + r["url"]) for r in runs]'
+
+# Set Routine call times by converting local hours to UTC and writing GH Variables.
+# Usage: make set-call-times MORNING=12 EVENING=22 OFFSET=8    (CST, default)
+#        make set-call-times MORNING=12 EVENING=22 OFFSET=-5   (EST)
+set-call-times:
+	@MORNING_UTC=$$(python3 -c "print(($(MORNING) - $(OFFSET)) % 24)"); \
+	 EVENING_UTC=$$(python3 -c "print(($(EVENING) - $(OFFSET)) % 24)"); \
+	 echo "Setting: local morning=$(MORNING), local evening=$(EVENING) (UTC+$(OFFSET))"; \
+	 echo "  → morning UTC $$MORNING_UTC:00, evening UTC $$EVENING_UTC:00"; \
+	 if [ "$$MORNING_UTC" -lt 2 ] || [ "$$MORNING_UTC" -gt 15 ]; then \
+	   echo "  ⚠️  morning UTC $$MORNING_UTC is outside cron window (02–15) — call may never fire"; \
+	 fi; \
+	 if [ "$$EVENING_UTC" -lt 2 ] || [ "$$EVENING_UTC" -gt 15 ]; then \
+	   echo "  ⚠️  evening UTC $$EVENING_UTC is outside cron window (02–15) — call may never fire"; \
+	 fi; \
+	 gh api "repos/$(REPO)/actions/variables/CALL_MORNING_UTC_HOUR" \
+	   --method PATCH -f value="$$MORNING_UTC" 2>/dev/null \
+	 || gh api "repos/$(REPO)/actions/variables" \
+	   --method POST -f name="CALL_MORNING_UTC_HOUR" -f value="$$MORNING_UTC"; \
+	 gh api "repos/$(REPO)/actions/variables/CALL_EVENING_UTC_HOUR" \
+	   --method PATCH -f value="$$EVENING_UTC" 2>/dev/null \
+	 || gh api "repos/$(REPO)/actions/variables" \
+	   --method POST -f name="CALL_EVENING_UTC_HOUR" -f value="$$EVENING_UTC"; \
+	 echo "✅ Done"
 
 # Manually fire the sync workflow and watch it run.
 test-run:

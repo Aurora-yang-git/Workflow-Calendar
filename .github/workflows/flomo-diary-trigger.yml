@@ -82,5 +82,11 @@ jobs:
             || gh api "repos/${REPO}/actions/variables" \
               --method POST -f name="DIARY_MEMO_LAST_UPDATED" -f value="$NOW"
 
+            # Reset pending count at the start of each day.
+            gh api "repos/${REPO}/actions/variables/PENDING_UPDATE_COUNT" \
+              --method PATCH -f value="0" 2>/dev/null \
+            || gh api "repos/${REPO}/actions/variables" \
+              --method POST -f name="PENDING_UPDATE_COUNT" -f value="0"
+
             echo "✅ Stored DIARY_MEMO_ID_TODAY=$MEMO_ID"
           fi

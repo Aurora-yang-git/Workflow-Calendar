@@ -40,17 +40,22 @@ Token format: `fmcp_*`. Get from flomo Settings → Open API.
 |----------|--------|-------|---------|
 | `DIARY_MEMO_ID_TODAY` | `flomo-diary-trigger.yml` at 08:00 CST | flomo memo ID string | Logger passes this to Routine so it can use `memo_batch_get` instead of `memo_search` |
 | `DIARY_MEMO_LAST_UPDATED` | `flomo-diary-trigger.yml` at 08:00 CST | ISO 8601 UTC timestamp | Baseline for the Routine's `updated_at > since` check |
-| `LAST_ROUTINE_SUCCESS_AT` | `flomo-logger-trigger.yml` on 2xx | ISO 8601 UTC timestamp | Used as `since` in the next webhook call — expands window correctly after a rate-limit gap |
-| `RATE_LIMITED_UNTIL` | `flomo-logger-trigger.yml` on 429 | ISO 8601 UTC timestamp | Logger skips all calls until after this time, then auto-resumes |
+| `LAST_ROUTINE_SUCCESS_AT` | `flomo-morning-call.yml` / `flomo-evening-call.yml` on 2xx | ISO 8601 UTC timestamp | Used as `since` in the next webhook call — expands window correctly after a rate-limit gap |
+| `RATE_LIMITED_UNTIL` | call workflows on 429 | ISO 8601 UTC timestamp | Call workflows skip all calls until after this time, then auto-resume |
+| `PENDING_UPDATE_COUNT` | `flomo-logger-trigger.yml` on change; reset by call workflows on 2xx and by `flomo-diary-trigger.yml` daily | Integer string | Number of diary memo changes since last successful Routine call |
+| `CALL_MORNING_UTC_HOUR` | `make set-call-times` | Integer string (UTC hour) | **Optional** — defaults to `4` (12:00 CST) if absent. Set via `make set-call-times`. |
+| `CALL_EVENING_UTC_HOUR` | `make set-call-times` | Integer string (UTC hour) | **Optional** — defaults to `14` (22:00 CST) if absent. Set via `make set-call-times`. |
 
-All variables are created automatically. On cold-start (variables absent), the logger falls back to `since = 24 hours ago` and treats `RATE_LIMITED_UNTIL` as not set.
+All variables are created automatically. On cold-start (variables absent): `since` falls back to 24h ago, `RATE_LIMITED_UNTIL` is treated as not set, `PENDING_UPDATE_COUNT` is treated as 0, and call times fall back to 12:00 / 22:00 CST.
 
 **Workflow files:**
 
 | File | Schedule | Purpose |
 |------|----------|---------|
-| `.github/workflows/flomo-logger-trigger.yml` | `*/15 0-15 * * *` UTC = every 15 min, 08:00–23:59 CST | Syncs flomo 时间记录 → Google Calendar |
-| `.github/workflows/flomo-diary-trigger.yml` | `0 0 * * *` UTC = 08:00 CST daily | Creates `#Diary Jun. 16 时间记录` header memo in flomo |
+| `.github/workflows/flomo-logger-trigger.yml` | `*/15 0-15 * * *` UTC = every 15 min, 08:00–23:59 CST | Polls diary memo `updated_at`; increments `PENDING_UPDATE_COUNT` when changed. Does NOT call Routine. |
+| `.github/workflows/flomo-diary-trigger.yml` | `0 0 * * *` UTC = 08:00 CST daily | Creates `#Diary Jun. 16 时间记录` header memo in flomo; resets `PENDING_UPDATE_COUNT=0` |
+| `.github/workflows/flomo-morning-call.yml` | `0 2-15 * * *` UTC (hourly); fires Routine at `CALL_MORNING_UTC_HOUR` (default 04 UTC = 12:00 CST) | Morning Routine call if `PENDING_UPDATE_COUNT ≥ 1` |
+| `.github/workflows/flomo-evening-call.yml` | `0 2-15 * * *` UTC (hourly); fires Routine at `CALL_EVENING_UTC_HOUR` (default 14 UTC = 22:00 CST) | Evening Routine call if `PENDING_UPDATE_COUNT ≥ 1` |
 
 ### Verify FLOMO_API_TOKEN before deploying the diary cron
 
@@ -106,7 +111,8 @@ If OBSIDIAN_VAULT_PATH is not set, exit with an error message.
 | `make health` | Check GH secrets exist, last 5 run statuses, flomo write access (requires `export FLOMO_API_TOKEN=fmcp_...` locally) |
 | `make deploy` | Copy `SKILL.md` to clipboard + open claude.ai |
 | `make logs` | Last 10 runs with timestamps and links |
-| `make test-run` | Fire the sync workflow now and watch it complete |
+| `make test-run` | Fire the polling workflow now and watch it complete |
+| `make set-call-times` | Set call times (defaults: `MORNING=12 EVENING=22 OFFSET=8` for CST). Example for EST: `make set-call-times MORNING=12 EVENING=22 OFFSET=-5` |
 
 ## Recovery Checklist (after a long gap)
 
@@ -119,9 +125,12 @@ If OBSIDIAN_VAULT_PATH is not set, exit with an error message.
   ```bash
   gh api repos/Aurora-yang-git/Workflow-Calendar/actions/variables/RATE_LIMITED_UNTIL --method DELETE
   ```
-- [ ] Trigger a manual test run: GitHub Actions → Flomo Time Logger Trigger → Run workflow
-- [ ] Write a test flomo memo containing "时间记录" and confirm a teal Calendar event appears within 20 min
-- [ ] If the manual test run prints "Rate limited until …" even after deleting the variable, check `LAST_ROUTINE_SUCCESS_AT` — it should update to the current time after a successful run
+- [ ] Check `PENDING_UPDATE_COUNT`: GitHub → repo Settings → Secrets and variables → Actions → Variables. A blank or `0` value is normal. A stuck nonzero value means the call workflows haven't fired yet.
+- [ ] Trigger a manual polling run: GitHub Actions → Flomo Time Logger Trigger → Run workflow (should print "No diary memo ID yet" before 08:00 CST, or a change count otherwise)
+- [ ] Trigger a manual morning call test: GitHub Actions → Flomo Morning Routine Call → Run workflow → set `force=true` input → confirm 2xx response and `LAST_ROUTINE_SUCCESS_AT` updates
+- [ ] Trigger a manual evening call test: same for Flomo Evening Routine Call
+- [ ] Write a test flomo memo into today's diary header and confirm the polling logger increments `PENDING_UPDATE_COUNT` within 20 min, then a teal Calendar event appears after the next call window
+- [ ] If call workflows fire but print "No pending updates" unexpectedly: the polling logger may have missed the update. Manually set `PENDING_UPDATE_COUNT=1` and re-trigger with `force=true` to test the Routine path.
 
 **Daily Diary Header Cron:**
 - [ ] Verify `FLOMO_API_TOKEN` secret is still set (same token as flomo MCP `fmcp_*`)

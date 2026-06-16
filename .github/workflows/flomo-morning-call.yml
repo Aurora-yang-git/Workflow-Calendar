@@ -1,0 +1,125 @@
+name: Flomo Morning Routine Call
+
+# Fires every hour within the CST active window (02–15 UTC = 10:00–23:00 CST).
+# At runtime checks if the current UTC hour matches CALL_MORNING_UTC_HOUR (default: 4 = 12:00 CST).
+# Change call time: make set-call-times MORNING=<local-hour> EVENING=<local-hour> OFFSET=<utc-offset>
+on:
+  schedule:
+    - cron: '0 2-15 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Skip hour check and call Routine immediately (for testing)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: flomo-state-write
+  cancel-in-progress: false
+
+jobs:
+  morning-call:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Check morning call window
+        run: |
+          CURRENT_HOUR=$(date -u +%H | sed 's/^0//')
+          TARGET_HOUR="${{ vars.CALL_MORNING_UTC_HOUR }}"
+          TARGET_HOUR="${TARGET_HOUR:-4}"
+          TARGET_HOUR=$(echo "$TARGET_HOUR" | sed 's/^0//')
+          if [ "$CURRENT_HOUR" != "$TARGET_HOUR" ] && [ "${{ inputs.force }}" != "true" ]; then
+            echo "::notice::Not morning call window (hour=$CURRENT_HOUR, target=$TARGET_HOUR) — skipping"
+            echo "SKIP=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Call Routine
+        if: env.SKIP != 'true'
+        run: |
+          REPO="${{ github.repository }}"
+
+          # Rate limit guard.
+          RATE_UNTIL="${{ vars.RATE_LIMITED_UNTIL }}"
+          if [ -n "$RATE_UNTIL" ] && [ "$(date -u +%s)" -lt "$(date -d "$RATE_UNTIL" +%s 2>/dev/null || echo 0)" ]; then
+            echo "Rate limited until $RATE_UNTIL — skipping"
+            exit 0
+          fi
+
+          COUNT="${{ vars.PENDING_UPDATE_COUNT }}"
+          COUNT="${COUNT:-0}"
+
+          # Dead-man fallback: if no successful call in >36h and count > 0, call anyway.
+          LAST_SUCCESS="${{ vars.LAST_ROUTINE_SUCCESS_AT }}"
+          if [ -z "$LAST_SUCCESS" ]; then
+            LAST_TS=0
+          else
+            LAST_TS=$(date -d "$LAST_SUCCESS" +%s 2>/dev/null || echo 0)
+          fi
+          NOW_TS=$(date -u +%s)
+          DEAD_MAN=false
+          if [ "$(( NOW_TS - LAST_TS ))" -gt 129600 ] && [ "$COUNT" -gt 0 ]; then
+            echo "::warning::Dead-man fallback: no successful Routine call in >36h — calling regardless"
+            DEAD_MAN=true
+          fi
+
+          if [ "$COUNT" -lt 1 ] && [ "$DEAD_MAN" != "true" ]; then
+            echo "No pending updates (count=$COUNT) — skipping"
+            exit 0
+          fi
+
+          SINCE="${LAST_SUCCESS:-$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)}"
+          DIARY_MEMO_ID="${{ vars.DIARY_MEMO_ID_TODAY }}"
+
+          if [ -n "$DIARY_MEMO_ID" ]; then
+            BODY="{\"trigger\": \"flomo_time_record\", \"since\": \"${SINCE}\", \"diary_memo_id\": \"${DIARY_MEMO_ID}\"}"
+          else
+            BODY="{\"trigger\": \"flomo_time_record\", \"since\": \"${SINCE}\"}"
+          fi
+
+          HTTP_STATUS=$(curl -s -o /tmp/routine_response.txt -w "%{http_code}" \
+            -X POST "${{ secrets.CLAUDE_ROUTINE_WEBHOOK_URL }}" \
+            -H "Authorization: Bearer ${{ secrets.CLAUDE_ROUTINE_API_KEY }}" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "Content-Type: application/json" \
+            -d "$BODY" \
+            --max-time 30)
+
+          echo "HTTP status: $HTTP_STATUS"
+          cat /tmp/routine_response.txt
+
+          NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
+            gh api "repos/${REPO}/actions/variables/PENDING_UPDATE_COUNT" \
+              --method PATCH -f value="0" 2>/dev/null \
+            || gh api "repos/${REPO}/actions/variables" \
+              --method POST -f name="PENDING_UPDATE_COUNT" -f value="0"
+
+            gh api "repos/${REPO}/actions/variables/LAST_ROUTINE_SUCCESS_AT" \
+              --method PATCH -f value="$NOW" 2>/dev/null \
+            || gh api "repos/${REPO}/actions/variables" \
+              --method POST -f name="LAST_ROUTINE_SUCCESS_AT" -f value="$NOW"
+
+            gh api "repos/${REPO}/actions/variables/RATE_LIMITED_UNTIL" \
+              --method DELETE 2>/dev/null || true
+
+            echo "✅ Morning Routine called successfully at $NOW"
+
+          elif [ "$HTTP_STATUS" = "429" ] || grep -qi "rate.limit\|try again\|quota exceeded" /tmp/routine_response.txt; then
+            RETRY_AT=$(date -u -d '5 hours' +%Y-%m-%dT%H:%M:%SZ)
+            gh api "repos/${REPO}/actions/variables/RATE_LIMITED_UNTIL" \
+              --method PATCH -f value="$RETRY_AT" 2>/dev/null \
+            || gh api "repos/${REPO}/actions/variables" \
+              --method POST -f name="RATE_LIMITED_UNTIL" -f value="$RETRY_AT"
+            echo "::warning::Rate limited. Skipping until $RETRY_AT"
+
+          else
+            echo "::warning::Routine webhook returned $HTTP_STATUS — will retry at next call window"
+          fi
