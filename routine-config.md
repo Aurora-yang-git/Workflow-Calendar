@@ -40,8 +40,10 @@ Token format: `fmcp_*`. Get from flomo Settings → Open API.
 |----------|--------|-------|---------|
 | `DIARY_MEMO_ID_TODAY` | `flomo-diary-trigger.yml` at 08:00 CST | flomo memo ID string | Logger passes this to Routine so it can use `memo_batch_get` instead of `memo_search` |
 | `DIARY_MEMO_LAST_UPDATED` | `flomo-diary-trigger.yml` at 08:00 CST | ISO 8601 UTC timestamp | Baseline for the Routine's `updated_at > since` check |
+| `LAST_ROUTINE_SUCCESS_AT` | `flomo-logger-trigger.yml` on 2xx | ISO 8601 UTC timestamp | Used as `since` in the next webhook call — expands window correctly after a rate-limit gap |
+| `RATE_LIMITED_UNTIL` | `flomo-logger-trigger.yml` on 429 | ISO 8601 UTC timestamp | Logger skips all calls until after this time, then auto-resumes |
 
-These are created automatically on first diary trigger run. If the trigger fails to write them (e.g., `gh` auth issue), the logger falls back gracefully (no `diary_memo_id` in webhook → Routine skips the batch-get path).
+All variables are created automatically. On cold-start (variables absent), the logger falls back to `since = 24 hours ago` and treats `RATE_LIMITED_UNTIL` as not set.
 
 **Workflow files:**
 
@@ -113,8 +115,13 @@ If OBSIDIAN_VAULT_PATH is not set, exit with an error message.
 - [ ] Verify Google Calendar MCP works: run a list_events in Claude Code
 - [ ] Re-paste SKILL.md into the claude.ai Routine (if Routine was deleted)
 - [ ] Confirm GitHub Secrets are still set: repo → Settings → Secrets and variables → Actions (`CLAUDE_ROUTINE_WEBHOOK_URL`, `CLAUDE_ROUTINE_API_KEY`, `FLOMO_API_TOKEN`)
+- [ ] Check `RATE_LIMITED_UNTIL` variable: if it's set and in the past, delete it manually:
+  ```bash
+  gh api repos/Aurora-yang-git/Workflow-Calendar/actions/variables/RATE_LIMITED_UNTIL --method DELETE
+  ```
 - [ ] Trigger a manual test run: GitHub Actions → Flomo Time Logger Trigger → Run workflow
 - [ ] Write a test flomo memo containing "时间记录" and confirm a teal Calendar event appears within 20 min
+- [ ] If the manual test run prints "Rate limited until …" even after deleting the variable, check `LAST_ROUTINE_SUCCESS_AT` — it should update to the current time after a successful run
 
 **Daily Diary Header Cron:**
 - [ ] Verify `FLOMO_API_TOKEN` secret is still set (same token as flomo MCP `fmcp_*`)

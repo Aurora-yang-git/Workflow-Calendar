@@ -7,21 +7,38 @@ on:
     - cron: '*/15 0-15 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: flomo-state-write
+  cancel-in-progress: false
+
 jobs:
   trigger:
     runs-on: ubuntu-latest
     timeout-minutes: 2
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - name: Trigger Claude Routine
         run: |
-          # Compute the 22-minute lookback window here so SKILL.md stays
-          # infrastructure-agnostic. 22 = 15-min cron interval + 7-min jitter buffer.
-          SINCE=$(date -u -d '22 minutes ago' +%Y-%m-%dT%H:%M:%SZ)
+          REPO="${{ github.repository }}"
 
-          # If the diary trigger stored today's memo ID, pass it directly so the
-          # Routine can use memo_batch_get (faster, saves tokens) instead of
-          # memo_search. The Routine checks updated_at > since internally.
+          # Skip if still inside a rate limit window.
+          RATE_UNTIL="${{ vars.RATE_LIMITED_UNTIL }}"
+          if [ -n "$RATE_UNTIL" ] && [ "$(date -u +%s)" -lt "$(date -d "$RATE_UNTIL" +%s 2>/dev/null || echo 0)" ]; then
+            echo "Rate limited until $RATE_UNTIL — skipping"
+            exit 0
+          fi
+
+          # Use last successful call time as the lookback window. On cold-start
+          # (variable empty) fall back to 24 hours ago to catch any missed entries.
+          SINCE="${{ vars.LAST_ROUTINE_SUCCESS_AT }}"
+          SINCE="${SINCE:-$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)}"
+
           DIARY_MEMO_ID="${{ vars.DIARY_MEMO_ID_TODAY }}"
 
           if [ -n "$DIARY_MEMO_ID" ]; then
@@ -41,7 +58,27 @@ jobs:
           echo "HTTP status: $HTTP_STATUS"
           cat /tmp/routine_response.txt
 
-          if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
-            echo "::error::Routine webhook returned $HTTP_STATUS"
-            exit 1
+          NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
+            gh api "repos/${REPO}/actions/variables/LAST_ROUTINE_SUCCESS_AT" \
+              --method PATCH -f value="$NOW" 2>/dev/null \
+            || gh api "repos/${REPO}/actions/variables" \
+              --method POST -f name="LAST_ROUTINE_SUCCESS_AT" -f value="$NOW"
+
+            gh api "repos/${REPO}/actions/variables/RATE_LIMITED_UNTIL" \
+              --method DELETE 2>/dev/null || true
+
+            echo "✅ Routine called successfully at $NOW"
+
+          elif [ "$HTTP_STATUS" = "429" ] || grep -qi "rate.limit\|try again\|quota exceeded" /tmp/routine_response.txt; then
+            RETRY_AT=$(date -u -d '5 hours' +%Y-%m-%dT%H:%M:%SZ)
+            gh api "repos/${REPO}/actions/variables/RATE_LIMITED_UNTIL" \
+              --method PATCH -f value="$RETRY_AT" 2>/dev/null \
+            || gh api "repos/${REPO}/actions/variables" \
+              --method POST -f name="RATE_LIMITED_UNTIL" -f value="$RETRY_AT"
+            echo "::warning::Rate limited. Skipping until $RETRY_AT"
+
+          else
+            echo "::warning::Routine webhook returned $HTTP_STATUS — will retry next run"
           fi
