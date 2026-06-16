@@ -56,5 +56,81 @@
       { "target_date": "2026-06-11", "activity": "晚上看手机", "start_time": "20:00", "end_time": "20:30", "confidence": "low" }
     ],
     "notes": "All activities vague. '下午没怎么动' — no clear activity, should be skipped entirely. Others get low confidence with time-of-day midpoints. These may or may not make it into Calendar depending on confidence threshold."
+  },
+  {
+    "id": "test-006",
+    "label": "Diary header line — skip the #Diary line, parse the rest",
+    "created_at": "2026-06-15T08:03:00+08:00",
+    "content": "#Diary Jun. 15 时间记录\n\n9:15起床洗漱，10:00开始写作业。",
+    "expected": [
+      { "target_date": "2026-06-15", "activity": "起床洗漱", "start_time": "09:15", "end_time": "10:00", "confidence": "medium" },
+      { "target_date": "2026-06-15", "activity": "写作业", "start_time": "10:00", "end_time": "10:30", "confidence": "medium" }
+    ],
+    "notes": "The '#Diary Jun. 15 时间记录' line is skipped as a header — NOT parsed as an activity. TARGET_DATE is extracted from '#Diary Jun. 15'. The rest of the memo is parsed normally."
+  },
+  {
+    "id": "test-007",
+    "label": "自习课 absorption — create new event, don't touch read-only calendar",
+    "created_at": "2026-06-15T11:30:00+08:00",
+    "content": "时间记录：10:00-11:30自习课上写了英语作文。",
+    "existing_events": [
+      {
+        "id": "cal-event-zixike",
+        "summary": "自习课",
+        "start": "2026-06-15T10:00:00+08:00",
+        "end": "2026-06-15T11:30:00+08:00",
+        "calendarId": "学习-课程（家庭日历）",
+        "description": ""
+      }
+    ],
+    "expected": [
+      {
+        "target_date": "2026-06-15",
+        "activity": "自习: 写英语作文",
+        "calendar": "学习-作业",
+        "start_time": "10:00",
+        "end_time": "11:30",
+        "confidence": "high",
+        "action": "create_event",
+        "description_contains": "[自动合并: 自习课吸收]"
+      }
+    ],
+    "notes": "自习课 is on a read-only calendar. Rule: create new event on 学习-作业 with [自动合并: 自习课吸收] tag. Do NOT call update_event on the read-only calendar event. Do NOT leave a separate flomo event — only the absorbed one."
+  },
+  {
+    "id": "test-008",
+    "label": "Default-activity principle — 坐车+听播客 → 路上（听播客）",
+    "created_at": "2026-06-15T16:00:00+08:00",
+    "content": "时间记录：3点坐地铁去学校，路上听了一集播客，大概40分钟。",
+    "expected": [
+      {
+        "target_date": "2026-06-15",
+        "activity": "路上（听播客）",
+        "calendar": "路上",
+        "start_time": "15:00",
+        "end_time": "15:40",
+        "confidence": "high"
+      }
+    ],
+    "notes": "Concurrent activities: transit (default — was happening anyway) + podcast (co-activity). Output is ONE event 路上（听播客）, NOT two separate events. Calendar = 路上 (the default activity's category)."
+  },
+  {
+    "id": "test-009",
+    "label": "[自动合并] tag must be at END of description, after 置信度",
+    "created_at": "2026-06-15T18:00:00+08:00",
+    "content": "时间记录：下午3点坐公交去图书馆，路上刷了会手机，45分钟。",
+    "existing_events": [],
+    "expected": [
+      {
+        "target_date": "2026-06-15",
+        "activity": "路上（刷手机）",
+        "calendar": "路上",
+        "start_time": "15:00",
+        "end_time": "15:45",
+        "confidence": "high",
+        "description_format": "[flomo:<id>] <excerpt> | 置信度: high | [自动合并: 路上→刷手机]"
+      }
+    ],
+    "notes": "Verify description string order: [flomo:id] first, then excerpt, then 置信度, then [自动合并] LAST. The dedup check scans for [flomo:id] prefix — placing [自动合并] before it would break dedup on subsequent polls."
   }
 ]

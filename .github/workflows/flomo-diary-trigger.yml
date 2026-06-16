@@ -1,0 +1,53 @@
+name: Flomo Daily Diary Header
+
+# Fires at 00:00 UTC = 08:00 CST every day.
+# China has no DST, so this mapping is stable year-round.
+# Creates a "#Diary Jun. 16 时间记录" header memo in flomo.
+# Aurora writes her time records into this memo throughout the day.
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+jobs:
+  create-diary-header:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - name: Create diary header memo
+        run: |
+          # Compute date in CST (Asia/Shanghai, UTC+8). Must use TZ env so
+          # the date command reflects CST, not the runner's UTC clock.
+          export TZ="Asia/Shanghai"
+          DATE=$(date "+%b. %-d")   # e.g. "Jun. 16"  (GNU date, %-d strips zero-pad)
+          CONTENT="#Diary ${DATE} 时间记录"
+
+          echo "Creating memo: ${CONTENT}"
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -X POST "https://flomoapp.com/api/v1/memo/" \
+            -H "Authorization: Bearer ${{ secrets.FLOMO_API_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"content\": \"${CONTENT}\"}" \
+            --max-time 30)
+
+          HTTP_STATUS=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+
+          echo "HTTP status: $HTTP_STATUS"
+          echo "Response body: $BODY"
+
+          if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
+            echo "::error::flomo API returned HTTP $HTTP_STATUS"
+            exit 1
+          fi
+
+          # Check flomo application-level status (code=0 means success).
+          APP_CODE=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('code','missing'))" 2>/dev/null || echo "parse_error")
+          if [ "$APP_CODE" != "0" ]; then
+            echo "::error::flomo API error (code=$APP_CODE): $BODY"
+            exit 1
+          fi
+
+          echo "✅ Diary header created: ${CONTENT}"
