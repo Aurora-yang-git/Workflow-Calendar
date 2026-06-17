@@ -1,0 +1,11 @@
+# Local planning and Claude Code config — not for the public repo
+PLAN.md
+CLAUDE.md
+
+# macOS
+.DS_Store
+.github/.DS_Store
+
+# Local dev artifacts
+main/
+*.patch

@@ -6,19 +6,22 @@ Automatically parses flomo 时间记录 memos into Google Calendar events, route
 
 ```mermaid
 flowchart TD
-    A["⏰ GitHub Actions cron\n*/15 min, 08:00–23:59 CST\n(UTC 00:00–15:59)"] -->|HTTP POST| B["Claude Routine\n(claude.ai webhook)"]
+    POLL["⏰ Polling logger\n*/15 min, 08:00–23:59 CST\nGETs diary memo updated_at\nIncrements PENDING_UPDATE_COUNT"] -->|change detected| COUNT["PENDING_UPDATE_COUNT +1"]
+
+    CALL_M["⏰ Morning call\nhourly cron, checks CALL_MORNING_UTC_HOUR\ndefault: 12:00 CST"] -->|count > 0| FETCH
+    CALL_E["⏰ Evening call\nhourly cron, checks CALL_EVENING_UTC_HOUR\ndefault: 22:00 CST"] -->|count > 0| FETCH
+
+    FETCH["Fetch diary memo content\nvia Flomo API"] -->|POST with diary_memo object| B["Claude Routine\n(claude.ai webhook)"]
 
     B --> S0["Step 0: list_calendars()\nBuild name → calendarId map"]
-    S0 --> S1["Step 1: memo_search\nkeywords='时间记录'\nsince = now − 22 min"]
+    S0 --> S1["Step 1: Read memos\ndiary_memo from webhook body\n+ memo_search for 时间记录 memos"]
 
     S1 -->|no new memos| SKIP["✅ Skip — nothing to do"]
     S1 -->|memos found| S2["Step 2: Parse each memo\nExtract time blocks → JSON\n(target_date, activity, start/end,\ncalendar, confidence)"]
 
-    S2 --> S3["Step 3: list_events(target_date)\nFetch existing calendar events"]
-    S3 --> S4["Step 4: Dedup + conflict check\nSkip if flomo ID already in description\nFlag overlaps with ⚠️"]
-    S4 --> S5["Step 5: create_event()\nWrite to correct calendarId\ndescription includes flomo memo ID"]
+    S2 --> S3["Step 3: Per target_date loop\n3a: list_events()\n3b: Fill low-confidence times\n3c: Dedup + conflict rules → write"]
 
-    S5 --> OUT["✅ N memos processed\nX events created\nY skipped (duplicate)\nZ skipped (low confidence)"]
+    S3 --> OUT["✅ N memos processed\nX events created / K updated\nY skipped (duplicate or low confidence)"]
 ```
 
 ## Calendar categories
@@ -61,12 +64,24 @@ In your repo → Settings → Secrets and variables → Actions:
 |---|---|
 | `CLAUDE_ROUTINE_WEBHOOK_URL` | Webhook URL from step 1 |
 | `CLAUDE_ROUTINE_API_KEY` | API key from step 1 |
+| `FLOMO_API_TOKEN` | Your flomo API token (used to fetch memo content before calling the Routine) |
 
-### 3. Enable the workflow
+### 3. Enable the workflows
 
-The workflow is in [`.github/workflows/flomo-logger-trigger.yml`](.github/workflows/flomo-logger-trigger.yml). It runs automatically once secrets are set.
+Three workflows run automatically once secrets are set:
 
-**Manual test:** GitHub Actions → Flomo Time Logger Trigger → Run workflow.
+| Workflow | Schedule | Purpose |
+|---|---|---|
+| `flomo-logger-trigger.yml` | Every 15 min, 08:00–23:59 CST | Detects diary memo changes, increments counter |
+| `flomo-morning-call.yml` | Hourly (default fires at 12:00 CST) | Calls Routine when pending updates exist |
+| `flomo-evening-call.yml` | Hourly (default fires at 22:00 CST) | Calls Routine when pending updates exist |
+
+**Change call times** without editing YAML:
+```
+make set-call-times MORNING=12 EVENING=22 OFFSET=8
+```
+
+**Manual test:** GitHub Actions → "Flomo Morning Routine Call" → Run workflow → enable `force` input.
 
 ## Writing memos
 
@@ -90,8 +105,11 @@ Events appear in Google Calendar within 15–20 minutes of writing.
 | File | Purpose |
 |---|---|
 | `SKILL.md` | Claude Routine system prompt — parsing rules, calendar routing |
-| `routine-config.md` | Non-secret setup reference, recovery checklist |
-| `.github/workflows/flomo-logger-trigger.yml` | GitHub Actions cron trigger |
+| `routine-config.md` | Non-secret setup reference, variable table, recovery checklist |
+| `.github/workflows/flomo-logger-trigger.yml` | Polling logger — detects diary memo changes |
+| `.github/workflows/flomo-morning-call.yml` | Morning Routine call (configurable hour) |
+| `.github/workflows/flomo-evening-call.yml` | Evening Routine call (configurable hour) |
+| `.github/workflows/flomo-diary-trigger.yml` | Creates today's diary memo header each morning |
 | `test/memos.json` | 5 test cases with expected parsing outputs |
 | `test/README.md` | How to run dry-run and live tests |
 
