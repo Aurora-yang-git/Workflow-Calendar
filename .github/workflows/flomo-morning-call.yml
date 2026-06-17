@@ -76,20 +76,55 @@ jobs:
 
           SINCE="${LAST_SUCCESS:-$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)}"
           DIARY_MEMO_ID="${{ vars.DIARY_MEMO_ID_TODAY }}"
+          BODY_FILE=$(mktemp)
 
+          # Fetch diary memo content to pass directly to the Routine (eliminates memo_batch_get MCP call)
+          DIARY_MEMO_JSON=""
           if [ -n "$DIARY_MEMO_ID" ]; then
-            BODY="{\"trigger\": \"flomo_time_record\", \"since\": \"${SINCE}\", \"diary_memo_id\": \"${DIARY_MEMO_ID}\"}"
-          else
-            BODY="{\"trigger\": \"flomo_time_record\", \"since\": \"${SINCE}\"}"
+            MEMO_RESP=$(curl -s -w "\n%{http_code}" \
+              "https://flomoapp.com/api/v1/memo/${DIARY_MEMO_ID}" \
+              -H "Authorization: Bearer ${{ secrets.FLOMO_API_TOKEN }}" \
+              --max-time 15)
+            MEMO_HTTP=$(echo "$MEMO_RESP" | tail -1)
+            MEMO_BODY_TEXT=$(echo "$MEMO_RESP" | head -n -1)
+            if [ "$MEMO_HTTP" = "200" ]; then
+              DIARY_MEMO_JSON=$(echo "$MEMO_BODY_TEXT" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+m = d.get('data', {})
+print(json.dumps({'id': m.get('id',''), 'content': m.get('content',''), 'created_at': m.get('created_at',''), 'updated_at': m.get('updated_at','')}, ensure_ascii=False))
+" 2>/dev/null || echo "")
+              [ -n "$DIARY_MEMO_JSON" ] && echo "Diary memo content fetched" || echo "::warning::Failed to extract diary memo fields — passing ID only"
+            else
+              echo "::warning::Diary memo fetch returned $MEMO_HTTP — passing ID only"
+            fi
           fi
+
+          # Build webhook body via python3 to handle Chinese characters safely
+          MEMO_SINCE="$SINCE" MEMO_DIARY_JSON="$DIARY_MEMO_JSON" MEMO_DIARY_ID="$DIARY_MEMO_ID" python3 -c "
+import json, os
+body = {'trigger': 'flomo_time_record', 'since': os.environ['MEMO_SINCE']}
+diary_json = os.environ.get('MEMO_DIARY_JSON', '')
+diary_id = os.environ.get('MEMO_DIARY_ID', '')
+if diary_json:
+    try:
+        body['diary_memo'] = json.loads(diary_json)
+    except Exception:
+        if diary_id: body['diary_memo_id'] = diary_id
+elif diary_id:
+    body['diary_memo_id'] = diary_id
+print(json.dumps(body, ensure_ascii=False))
+" > "$BODY_FILE"
 
           HTTP_STATUS=$(curl -s -o /tmp/routine_response.txt -w "%{http_code}" \
             -X POST "${{ secrets.CLAUDE_ROUTINE_WEBHOOK_URL }}" \
             -H "Authorization: Bearer ${{ secrets.CLAUDE_ROUTINE_API_KEY }}" \
             -H "anthropic-version: 2023-06-01" \
             -H "Content-Type: application/json" \
-            -d "$BODY" \
+            --data @"$BODY_FILE" \
             --max-time 30)
+
+          rm -f "$BODY_FILE"
 
           echo "HTTP status: $HTTP_STATUS"
           cat /tmp/routine_response.txt

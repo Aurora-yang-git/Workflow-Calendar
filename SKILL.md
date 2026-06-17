@@ -17,20 +17,22 @@ list_calendars()
 
 ---
 
-## Step 1: 读取时间记录 memo
+## Step 1: 获取 memo 列表
 
-**调用一：** 常规滚动窗口（新写或更新的 memo）
-```
-memo_search(keywords="时间记录", start_date=<webhook payload 中的 `since` 字段>)
-```
+**日记 memo（webhook body 预取）：** 若 body 包含 `diary_memo` 对象，直接使用其 `id`、`content`、`created_at`、`updated_at`，无需再调用 MCP。GH Actions 已验证内容在 `since` 之后更新，直接纳入待处理列表。
 
-**调用二（当天日记 memo）：** 仅在 webhook payload 含 `diary_memo_id` 字段时执行：
+若 body 仅含 `diary_memo_id`（兜底）：
 ```
 memo_batch_get(ids=[diary_memo_id])
 ```
-从返回结果中取出该 memo 的 `updated_at`。若 `updated_at ≤ since`，说明 Aurora 在本次轮询窗口内未写入新内容，**跳过该 memo**（不合并入列表）。若 `updated_at > since`，合并入列表。
+取出 `updated_at`；若 `updated_at ≤ since` 则跳过。
 
-将两次结果合并，按 `id` 去重，得到本次待处理 memo 列表。
+**常规时间记录 memo：** 调用 Flomo MCP：
+```
+memo_search(keywords="时间记录", start_date=<body 中的 `since` 字段>)
+```
+
+将以上结果合并，按 `id` 去重，得到本次待处理 memo 列表。
 
 提取每条 memo 的：`id`、`created_at`（含 `+08:00` 时区，无需换算）、`content`。
 
@@ -150,9 +152,12 @@ Aurora 写的是**全天叙事型摘要**（有时当晚写，有时第二天早
 
 ---
 
-## Step 3: 读取当天日历并分类
+## Step 3: 按日期处理并写入日历
 
-对每个唯一的 `target_date`，调用 Google Calendar MCP：
+对 Step 2 输出的每个唯一 `target_date`，依次执行以下子步骤：
+
+### 3a. 读取当天已有事件
+
 ```
 list_events(
   startTime="<target_date>T00:00:00+08:00",
@@ -161,123 +166,65 @@ list_events(
 )
 ```
 
-将已有事件按以下规则分类，供 Step 4 使用：
+### 3b. 补全低置信度时间
 
-| 类型 | 判断条件 | 在 Step 4 中的角色 |
-|------|---------|------------------|
-| **占位健康事件** | description 中**无** `[flomo:]` 前缀，且 summary 含睡觉/睡眠/洗漱/洗澡/早饭/早餐/午饭/午餐/晚饭/晚餐 | 可被 flomo 实际时间替换（update_event） |
-| **系统已录入** | description 中**有** `[flomo:]` 前缀 | 已处理，参与去重；若时间段吻合则跳过 |
-| **固定课程** | 来自只读日历（`学习-课程（家庭日历）`），或 summary 明显是排课（X课） | 不修改；可做默认活动合并基础 |
-| **其他用户事件** | 不满足以上任何条件 | 保留；与 flomo 活动重叠时走冲突规则 |
+对当日活动中 `confidence=low` 且 start_time 来自模糊时段的，用 3a 读到的已有事件反推时间段：
 
----
-
-## Step 3.5: 利用日历上下文补全低置信度时间
-
-对 Step 2 输出中 `confidence=low` 且 start_time 来自模糊时段的活动，用 Step 3 读到的已有事件（以及同 memo 中已确定时间的其他活动）反推时间段：
-
-1. 将 target_date 当天所有事件按时间排列，列出空档（包括同 memo 高置信度活动的时段）
-2. 在该活动的模糊时段内（上午=08:00–12:00，下午=12:00–18:00，晚上=18:00–23:00，若无时段信息=全天）找最合适的空档：
-   - **优先**：同一 memo 中，前一活动的 end_time 到后一活动的 start_time 之间的空档
-   - **次选**：与活动类型吻合的空档（复习/自习 → 偏傍晚；散步/舒缓 → 偏餐后；规划/整理 → 偏晚间）
+1. 将 target_date 所有事件按时间轴排列，列出空档（包含同 memo 中已确定时间段）
+2. 在该活动的模糊时段内（上午=08:00–12:00，下午=12:00–18:00，晚上=18:00–23:00）找最合适的空档：
+   - **优先**：同一 memo 中，前一活动 end_time 到后一活动 start_time 之间的空档
+   - **次选**：与活动类型吻合的空档（复习/自习 → 偏傍晚；散步/舒缓 → 偏餐后；规划整理 → 偏晚间）
 3. 若找到 ≤3h 的清晰空档：
-   - `start_time = 空档开始`
-   - `end_time = min(空档结束, start + 合理时长)`
-     - 合理时长参考：编码/研究/workflow类任务=90min，复习/学习=60min，规划整理=30min，其他=默认时长表
+   - `start_time = 空档开始`，`end_time = min(空档结束, start + 合理时长)`
+   - 合理时长：编码/研究/workflow 类=90min，复习/学习=60min，规划整理=30min，其他=默认时长表
    - 将 `confidence` 升为 `medium`
-4. 若空档 >3h 或无明确边界：取该时段中段为 start_time，用默认时长，保持 `confidence=low`
-5. 时间调整后重新四舍五入到 15 分钟粒度
+4. 若空档 >3h 或无明确边界：取时段中段为 start_time，保持 `confidence=low`
+5. 调整后重新四舍五入到 15 分钟粒度
 
----
+### 3c. 去重、冲突检测与写入
 
-## Step 4: 去重 + 冲突检测
+**总原则：全程自动判断，不输出"请确认"或要求 Aurora 手动处理的文字。⚠️ 标记仅写入 description 作为日志。**
 
-**总原则：AI 全程自动判断，不需要 Aurora 手动解决任何冲突。⚠️ 标记仅作为日志信息写入 description，不意味着需要用户操作。**
+对当日每条活动，将 3a 中的已有事件按以下条件分类，再按优先级匹配第一条规则执行：
 
-### 去重（先执行，命中则跳过当前活动）
-
-对当前 flomo 活动（memo_id=X，start_time=T1，end_time=T2），扫描已有事件：
-- 若存在某事件的 description 含 `[flomo:X]` **且**该事件时间与 T1–T2 **重叠**→ **跳过此活动**（已录入）
-- 注意：同一 memo 的其他时间段不影响本次判断（日记 memo 全天累积写入，不同时段分开去重）
-
-### 冲突检测与自动解决
-
-按以下优先顺序处理，**命中第一条匹配规则即停止**：
+**已有事件分类（供规则判断，不需要输出）：**
+- **占位健康事件**：description 无 `[flomo:]`，且 summary 含睡觉/睡眠/洗漱/洗澡/早饭/早餐/午饭/午餐/晚饭/晚餐
+- **系统已录入**：description 含 `[flomo:]`
+- **固定课程**：来自只读日历 `学习-课程（家庭日历）`，或 summary 明显是排课
+- **其他用户事件**：不满足以上任何条件
 
 | 优先级 | 情况 | 处理 |
 |--------|------|------|
-| 1 | 无时间重叠 | 直接新建 |
-| 2 | 已有事件为**占位健康事件**（见 Step 3 分类），且 flomo 活动语义相同（如吃晚饭↔晚饭）| **直接替换**：`update_event` 更新时间；description 设为 `[flomo:<id>] <excerpt> \| 置信度: <confidence> \| [自动更新: 实际时间]` |
-| 3 | 同一时间段、核心活动相同 | 跳过（已有记录）|
-| 3.5 | 已有事件 summary 为空、"New Event"、"事件"、或其他无意义占位符（且无 `[flomo:]` 标签）| **直接替换**：`update_event` 更新 summary/时间/description；description 追加 `[自动替换: 原占位符事件]` |
-| 4 | 已有事件 summary 含 `自习`（自习课、晚自习等）| **自习课吸收**：见下方规则 |
-| 5 | 已有事件来自 `学习-课程` 或 `路上` 日历，且 flomo 活动是该时段的搭载活动 | **默认活动合并**：见下方规则 |
-| 6 | 两件事均为安排好的课程（两个都在 `学习-课程`）| 新建 flomo 事件；两个事件 description 末尾各追加 `⚠️ 时间重叠` |
-| 7 | 重叠 1–30 分钟，其他情况 | 新建；两个事件 description 末尾各追加 `⚠️ 时间重叠（已自动录入）` |
-| 8 | 重叠 >30 分钟，其他情况 | **自动判断**：按下方规则选择更可信的事件，消除重叠后写入；description 追加 `⚠️ 时间重叠（已自动处理）` |
-| 9 | memo 内容与已有事件矛盾 | 新建 flomo 事件；在已有事件 description 末尾追加 `⚠️ 据flomo可能有出入（已自动录入）` |
-| 10 | target_date 超过 24 小时前 | **跳过**（不回填历史）|
+| 0 | 已有事件 description 含 `[flomo:<memo_id>]` 且时间段与本活动重叠 | **跳过**（已录入） |
+| 1 | 无时间重叠 | `create_event` |
+| 2 | 已有事件为**占位健康事件**，且语义相同（吃晚饭↔晚饭，睡觉↔睡眠…） | `update_event` 更新时间；description 设为 `[flomo:<id>] <excerpt> \| 置信度: <confidence> \| [自动更新: 实际时间]` |
+| 3 | 同时间段、核心活动相同 | 跳过 |
+| 3.5 | 已有事件 summary 为空/"New Event"/"事件"等无意义占位符（无 `[flomo:]`）| `update_event` 替换 summary/时间/description；description 追加 `[自动替换: 原占位符事件]` |
+| 4 | 已有事件 summary 含 `自习`，且所在日历**可写** | `update_event` 改 summary 为 `自习: <activity>`，迁移至 activity 对应日历；不再 `create_event`；description 追加 `\| [自动合并: 自习课→<activity>]` |
+| 4b | 同上但日历**只读** | `create_event` 新建；description 追加 `\| [自动合并: 自习课吸收]` |
+| 5 | 已有事件来自 `学习-课程` 或 `路上` 日历，flomo 活动是该时段的搭载活动（且日历**可写**） | `update_event` 在原标题后加括号 `<原标题>（<activity>）`；不新建；description 追加 `\| [自动合并: <原标题>→<activity>]` |
+| 5b | 同上但日历**只读** | 降级至规则 7 |
+| 6 | 两件均为排课（均在 `学习-课程`） | `create_event`；两事件 description 各追加 `⚠️ 时间重叠` |
+| 7 | 重叠 1–30 分钟，其他情况 | `create_event`；两事件各追加 `⚠️ 时间重叠（已自动录入）` |
+| 8a | 重叠 >30 分钟，已有事件无实质标题（同 3.5 条件）| 直接替换，同规则 3.5 |
+| 8b | 重叠 >30 分钟，flomo confidence=high 且已有事件无 `[flomo:]` | 修剪已有事件（end_time 设为 flomo start_time）；`create_event` 新建；各追加 `⚠️ 时间重叠（已自动处理）` |
+| 8c | 重叠 >30 分钟，其他 | `create_event`；两事件各追加 `⚠️ 时间重叠（已自动录入）` |
+| 9 | memo 内容与已有事件矛盾 | `create_event`；已有事件追加 `⚠️ 据flomo可能有出入（已自动录入）` |
+| 10 | target_date 超过 24 小时前 | **跳过**（不回填历史） |
 
-#### 占位健康事件替换规则（优先级 2）
+**占位健康事件语义匹配（LLM 判断，非关键词硬匹配）：**
+- 睡觉/睡了/入睡 ↔ 睡觉、睡眠
+- 洗澡/洗漱 ↔ 洗澡、洗漱
+- 吃早饭/早饭 ↔ 早饭、早餐
+- 吃午饭/午饭 ↔ 午饭、午餐、中饭
+- 吃晚饭/晚饭 ↔ 晚饭、晚餐
 
-语义匹配判断（LLM 判断，不是关键词硬匹配）：
-- 睡觉 / 睡了 / 入睡 ↔ 睡觉、睡眠
-- 洗澡 / 洗漱 ↔ 洗澡、洗漱
-- 吃早饭 / 早饭 ↔ 早饭、早餐
-- 吃午饭 / 午饭 ↔ 午饭、午餐、中饭
-- 吃晚饭 / 晚饭 ↔ 晚饭、晚餐
+若占位事件在只读日历：跳过规则 2，降级至规则 7。
 
-操作：
-- `update_event(eventId=<占位事件id>, startTime=<实际>, endTime=<实际>)`
-- description 替换为 `[flomo:<memo_id>] <excerpt> | 置信度: <confidence> | [自动更新: 实际时间]`
-- 若占位事件在只读日历：跳过此规则，降级至规则 7（新建 + ⚠️）
-
-#### 自习课吸收规则（优先级 4）
-
-已有 `自习课` 类事件是占位符，可被 flomo 实际活动取代：
-
-- 若已有事件所在日历**可写**（非 `学习-课程（家庭日历）`）：
-  - 调用 `update_event(eventId=<已有事件id>, summary="自习: <activity>", calendarId=<activity对应日历>)`
-  - 在 description 末尾追加 `| [自动合并: 自习课→<activity>]`
-  - **不**再调用 `create_event`
-- 若已有事件所在日历**只读**（`学习-课程（家庭日历）`）：
-  - 调用 `create_event` 在 `<activity对应日历>` 新建事件
-  - description 末尾追加 `| [自动合并: 自习课吸收]`
-  - 不修改只读日历上的原事件
-
-#### 大重叠自动判断规则（优先级 8）
-
-当 flomo 活动与已有事件重叠 >30 分钟，按以下顺序自动决策（无需用户介入）：
-
-1. **已有事件无实质标题**（"New Event"、空 summary、无 `[flomo:]` 前缀且无明确名称）→ 直接替换，等同规则 3.5
-2. **flomo 活动 confidence=high，已有事件无 `[flomo:]` 标签** → 修剪已有事件：将已有事件的 end_time 设为 flomo 活动 start_time，然后新建 flomo 事件；两者 description 各追加 `⚠️ 时间重叠（已自动处理）`
-3. **两者均有明确来源（都有 `[flomo:]` 或都是用户手动创建）** → 新建 flomo 事件，不修改已有事件；两者 description 各追加 `⚠️ 时间重叠（已自动录入）`
-4. **其余情况** → 新建 flomo 事件，不修改已有事件；两者 description 各追加 `⚠️ 时间重叠（已自动录入）`
-
-**关键原则：以上任何决策均自动执行，不输出"请确认"或任何要求用户手动处理的文字。**
-
-#### 默认活动合并规则（优先级 5）
-
-已有事件是"不管如何都会发生"的默认活动（上课、坐车等），flomo 活动是搭载：
-
-- **不**新建独立的 flomo 事件
-- 调用 `update_event` 修改已有事件的 summary：在原标题后加括号 `<原标题>（<flomo activity>）`
-- 在 description 末尾追加 `| [自动合并: <原标题>→<flomo activity>]`
-- 若已有事件在只读日历：跳过合并，改为规则 7（新建 + ⚠️）
-
----
-
-## Step 5: 写入 Google Calendar
-
-**优先 update_event，再考虑 create_event。**
-
-- 若 Step 4 触发了优先级 2（占位健康替换）或优先级 4/5（自习课吸收/默认活动合并）→ 调用 `update_event`，**不调用** `create_event`
-- 其余情况（优先级 1 无重叠，或需要新建）→ 调用 `create_event`
-
-新建事件格式：
+**新建事件格式：**
 ```
 create_event(
-  calendarId=<从映射表查到的 ID>,
+  calendarId=<Step 0 映射表中的 ID>,
   summary="<activity>",
   startTime="<target_date>T<start_time>:00+08:00",
   endTime="<target_date>T<end_time>:00+08:00",
@@ -286,14 +233,10 @@ create_event(
 )
 ```
 
-事件标题就是活动名称，**不加任何前缀**。
-
-若触发了自动合并规则，在 description **末尾**追加 `| [自动合并: ...]` 或 `| [自动更新: ...]`，格式示例：
+合并/更新时在 description **末尾**追加（不替换 `[flomo:id]` 前缀）：
 - `[flomo:abc] 路上听播客 | 置信度: medium | [自动合并: 路上→听播客]`
 - `[flomo:abc] 写英语作文 | 置信度: high | [自动合并: 自习课吸收]`
 - `[flomo:abc] 睡觉 22:30–7:00 | 置信度: high | [自动更新: 实际时间]`
-
-⚠️ 标记同理，始终追加在 description 末尾，不替换 `[flomo:id]` 前缀。
 
 ---
 
