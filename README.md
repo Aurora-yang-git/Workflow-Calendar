@@ -6,15 +6,34 @@ Automatically parses flomo 时间记录 memos into Google Calendar events, route
 
 ```mermaid
 flowchart TD
-    POLL["⏰ Polling logger\n*/15 min, 08:00–23:59 CST\nGETs diary memo updated_at\nIncrements PENDING_UPDATE_COUNT"] -->|change detected| COUNT["PENDING_UPDATE_COUNT +1"]
+    subgraph POLL ["⏰ Polling Logger — */15 min, 08:00–23:59 CST"]
+        PA{"DIARY_MEMO_ID_TODAY\nset?"} -->|no| PS(["⏭ skip"])
+        PA -->|yes| PB["GET /api/v1/memo/{id}\nparse updated_at"]
+        PB -->|non-200| PS
+        PB --> PC{"updated_at >\nDIARY_MEMO_LAST_UPDATED?"}
+        PC -->|no change| PS
+        PC -->|changed| PD["PENDING_UPDATE_COUNT +1\nDIARY_MEMO_LAST_UPDATED saved"]
+    end
 
-    CALL_M["⏰ Morning call\nhourly cron, checks CALL_MORNING_UTC_HOUR\ndefault: 12:00 CST"] -->|count > 0| FETCH
-    CALL_E["⏰ Evening call\nhourly cron, checks CALL_EVENING_UTC_HOUR\ndefault: 22:00 CST"] -->|count > 0| FETCH
+    subgraph CALL ["⏰ Morning / Evening Call — hourly"]
+        CA_M["Morning cron"] --> CB{"hour =\nCALL_*_UTC_HOUR?\nor force=true"}
+        CA_E["Evening cron"] --> CB
+        CB -->|no| CS(["⏭ skip"])
+        CB -->|yes| CC{"RATE_LIMITED\n_UNTIL in future?"}
+        CC -->|yes| CS
+        CC -->|no| CD{"PENDING_UPDATE\n_COUNT > 0\nOR dead-man > 36h?"}
+        CD -->|no| CS
+        CD -->|yes| CE["since = LAST_ROUTINE_SUCCESS_AT\n(fallback: now − 24h)"]
+        CE --> CF["Fetch diary memo\nGET /api/v1/memo/{id}"]
+        CF --> CG["POST {since, diary_memo}\n→ Claude Routine webhook"]
+        CG -->|2xx| CH["COUNT = 0\nLAST_SUCCESS_AT = now\nRATE_LIMITED_UNTIL cleared"]
+        CG -->|429| CI["RATE_LIMITED_UNTIL\n= now + 5h"]
+        CG -->|other| CJ["⚠ warn — retry\nnext window"]
+    end
 
-    FETCH["Fetch diary memo content\nvia Flomo API"] -->|POST with diary_memo object| B["Claude Routine\n(claude.ai webhook)"]
-
+    CG -->|triggers| B["☁ Claude Routine\n(claude.ai)"]
     B --> S0["Step 0: list_calendars()\nBuild name → calendarId map"]
-    S0 --> S1["Step 1: Read memos\ndiary_memo from webhook body\n+ memo_search for 时间记录 memos"]
+    S0 --> S1["Step 1: Read memos\ndiary_memo from webhook body\n+ memo_search(start_date=since)"]
 
     S1 -->|no new memos| SKIP["✅ Skip — nothing to do"]
     S1 -->|memos found| S2["Step 2: Parse each memo\nExtract time blocks → JSON\n(target_date, activity, start/end,\ncalendar, confidence)"]
