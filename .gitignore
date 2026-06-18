@@ -6,6 +6,9 @@ CLAUDE.md
 .DS_Store
 .github/.DS_Store
 
+# Claude Code session files
+.claude/
+
 # Local dev artifacts
 main/
 *.patch
