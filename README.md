@@ -6,22 +6,24 @@ Automatically parses flomo 时间记录 memos into Google Calendar events, route
 
 ```mermaid
 flowchart TD
-    POLL["⏰ Polling logger\n*/15 min, 08:00–23:59 CST\nGETs diary memo updated_at\nIncrements PENDING_UPDATE_COUNT"] -->|change detected| COUNT["PENDING_UPDATE_COUNT +1"]
+    POLL["⏰ Polling logger\n*/15 min, 08:00–23:59 CST\nGETs diary memo updated_at"] -->|updated_at changed| COUNT["PENDING_UPDATE_COUNT +1\nDIARY_MEMO_LAST_UPDATED saved"]
 
-    CALL_M["⏰ Morning call\nhourly cron, checks CALL_MORNING_UTC_HOUR\ndefault: 12:00 CST"] -->|count > 0| FETCH
-    CALL_E["⏰ Evening call\nhourly cron, checks CALL_EVENING_UTC_HOUR\ndefault: 22:00 CST"] -->|count > 0| FETCH
+    CALL_M["⏰ Morning call\nhourly, checks CALL_MORNING_UTC_HOUR\ndefault: 12:00 CST"] -->|count > 0\nor dead-man > 36h| HORIZON
+    CALL_E["⏰ Evening call\nhourly, checks CALL_EVENING_UTC_HOUR\ndefault: 22:00 CST"] -->|count > 0\nor dead-man > 36h| HORIZON
 
-    FETCH["Fetch diary memo content\nvia Flomo API"] -->|POST with diary_memo object| B["Claude Routine\n(claude.ai webhook)"]
+    HORIZON["Set since horizon\n= LAST_ROUTINE_SUCCESS_AT\n(fallback: now − 24h)"] --> FETCH
+
+    FETCH["Fetch diary memo content\nvia Flomo REST API\n(pre-fetches full object for Routine)"] -->|POST {since, diary_memo}| B["Claude Routine\n(claude.ai webhook)"]
 
     B --> S0["Step 0: list_calendars()\nBuild name → calendarId map"]
-    S0 --> S1["Step 1: Read memos\ndiary_memo from webhook body\n+ memo_search for 时间记录 memos"]
+    S0 --> S1["Step 1: Read memos\ndiary_memo from body (pre-fetched)\n+ memo_search(start_date=since)"]
 
     S1 -->|no new memos| SKIP["✅ Skip — nothing to do"]
     S1 -->|memos found| S2["Step 2: Parse each memo\nExtract time blocks → JSON\n(target_date, activity, start/end,\ncalendar, confidence)"]
 
     S2 --> S3["Step 3: Per target_date loop\n3a: list_events()\n3b: Fill low-confidence times\n3c: Dedup + conflict rules → write"]
 
-    S3 --> OUT["✅ N memos processed\nX events created / K updated\nY skipped (duplicate or low confidence)"]
+    S3 --> OUT["✅ N memos processed\nX events created / K updated\nY skipped (duplicate or low confidence)\n→ PENDING_UPDATE_COUNT = 0\n   LAST_ROUTINE_SUCCESS_AT = now"]
 ```
 
 ## Calendar categories
